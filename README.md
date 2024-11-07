@@ -9,6 +9,6 @@ docker-compose run -it cuda-app /bin/bash
 ## How to compile?
 1. For this excercise:
 ```bash
-nvcc -o ht_v1.o hough_v1.cu
+nvcc -o ht_v1.o main_v1.cu
 ./ht_v1.o
 ```
