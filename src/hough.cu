@@ -55,8 +55,8 @@ void CPU_HoughTran(unsigned char *pic, int w, int h, int **acc)
 //*****************************************************************
 // TODO usar memoria constante para la tabla de senos y cosenos
 // inicializarlo en main y pasarlo al device
-//__constant__ float d_Cos[degreeBins];
-//__constant__ float d_Sin[degreeBins];
+__constant__ float d_Cos[degreeBins];
+__constant__ float d_Sin[degreeBins];
 
 //*****************************************************************
 // TODO Kernel memoria compartida
@@ -72,10 +72,10 @@ void CPU_HoughTran(unsigned char *pic, int w, int h, int **acc)
 
 // GPU kernel. One thread per image pixel is spawned.
 // The accummulator memory needs to be allocated by the host in global memory
-__global__ void GPU_HoughTran(unsigned char *pic, int w, int h, int *acc, float rMax, float rScale, float *d_Cos, float *d_Sin)
+__global__ void GPU_HoughTran(unsigned char *pic, int w, int h, int *acc, float rMax, float rScale)
 {
   int gloID = blockIdx.x * blockDim.x + threadIdx.x;
-  if (gloID > w * h)
+  if (gloID >= w * h)
     return; // in case of extra threads in block
 
   int xCent = w / 2;
@@ -92,7 +92,6 @@ __global__ void GPU_HoughTran(unsigned char *pic, int w, int h, int *acc, float 
     for (int tIdx = 0; tIdx < degreeBins; tIdx++)
     {
       // TODO utilizar memoria constante para senos y cosenos
-      // float r = xCoord * cos(tIdx) + yCoord * sin(tIdx); //probar con esto para ver diferencia en tiempo
       float r = xCoord * d_Cos[tIdx] + yCoord * d_Sin[tIdx];
       int rIdx = (r + rMax) / rScale;
       // debemos usar atomic, pero que race condition hay si somos un thread por pixel? explique
@@ -116,8 +115,8 @@ int main(int argc, char **argv)
   int w = inImg.x_dim;
   int h = inImg.y_dim;
 
-  float *d_Cos;
-  float *d_Sin;
+  // float *d_Cos;
+  // float *d_Sin;
 
   cudaMalloc((void **)&d_Cos, sizeof(float) * degreeBins);
   cudaMalloc((void **)&d_Sin, sizeof(float) * degreeBins);
@@ -135,6 +134,10 @@ int main(int argc, char **argv)
     pcSin[i] = sin(rad);
     rad += radInc;
   }
+
+  // Copiar valores precalculados a memoria constante
+  cudaMemcpyToSymbol(d_Cos, pcCos, sizeof(float) * degreeBins);
+  cudaMemcpyToSymbol(d_Sin, pcSin, sizeof(float) * degreeBins);
 
   float rMax = sqrt(1.0 * w * w + 1.0 * h * h) / 2;
   float rScale = 2 * rMax / rBins;
@@ -168,7 +171,7 @@ int main(int argc, char **argv)
   // Registrar el tiempo de inicio
   cudaEventRecord(start);
 
-  GPU_HoughTran<<<blockNum, 256>>>(d_in, w, h, d_hough, rMax, rScale, d_Cos, d_Sin);
+  GPU_HoughTran<<<blockNum, 256>>>(d_in, w, h, d_hough, rMax, rScale);
 
   // Registrar el tiempo de fin
   cudaEventRecord(stop);
