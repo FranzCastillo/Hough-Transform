@@ -13,6 +13,8 @@
 #include <math.h>
 #include <cuda.h>
 #include <string.h>
+#include <fstream>
+#include <algorithm>
 #include "common/pgm.h"
 
 const int degreeInc = 2;
@@ -188,6 +190,35 @@ int main(int argc, char **argv)
       printf("Calculation mismatch at : %i %i %i\n", i, cpuht[i], h_hough[i]);
   }
   printf("Done!\n");
+
+  // Set threshold
+  const int threshold = 100;
+
+  // Apply threshold
+  for (int i = 0; i < degreeBins * rBins; i++)
+  {
+    if (h_hough[i] < threshold)
+    {
+      h_hough[i] = 0;
+    }
+  }
+
+  // Normalize data
+  int maxVal = *std::max_element(h_hough, h_hough + degreeBins * rBins);
+
+  // Open a PGM file
+  std::ofstream pgmFile("output.pgm");
+  pgmFile << "P2\n"
+          << degreeBins << " " << rBins << "\n"
+          << maxVal << "\n";
+
+  // Write the Hough data
+  for (int i = 0; i < degreeBins * rBins; i++)
+  {
+    pgmFile << h_hough[i] << " ";
+    if ((i + 1) % degreeBins == 0)
+      pgmFile << "\n";
+  }
 
   // cleanup
   free(cpuht);
