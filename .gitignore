@@ -32,3 +32,6 @@
 *.app
 
 .idea/
+
+*.png
+houghBase.cu

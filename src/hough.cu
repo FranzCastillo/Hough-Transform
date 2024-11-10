@@ -15,6 +15,7 @@
 #include <string.h>
 #include <fstream>
 #include <algorithm>
+#include <opencv2/opencv.hpp>
 #include "common/pgm.h"
 
 const int degreeInc = 2;
@@ -118,8 +119,8 @@ int main(int argc, char **argv)
   // float *d_Cos;
   // float *d_Sin;
 
-  cudaMalloc((void **)&d_Cos, sizeof(float) * degreeBins);
-  cudaMalloc((void **)&d_Sin, sizeof(float) * degreeBins);
+  /* cudaMalloc((void **)&d_Cos, sizeof(float) * degreeBins);
+  cudaMalloc((void **)&d_Sin, sizeof(float) * degreeBins); */
 
   // CPU calculation
   CPU_HoughTran(inImg.pixels, w, h, &cpuht);
@@ -143,8 +144,8 @@ int main(int argc, char **argv)
   float rScale = 2 * rMax / rBins;
 
   // TODO eventualmente volver memoria global
-  cudaMemcpy(d_Cos, pcCos, sizeof(float) * degreeBins, cudaMemcpyHostToDevice);
-  cudaMemcpy(d_Sin, pcSin, sizeof(float) * degreeBins, cudaMemcpyHostToDevice);
+  /* cudaMemcpy(d_Cos, pcCos, sizeof(float) * degreeBins, cudaMemcpyHostToDevice);
+  cudaMemcpy(d_Sin, pcSin, sizeof(float) * degreeBins, cudaMemcpyHostToDevice); */
 
   // setup and copy data from host to device
   unsigned char *d_in, *h_in;
@@ -206,22 +207,14 @@ int main(int argc, char **argv)
     }
   }
 
-  // Normalize data
-  int maxVal = *std::max_element(h_hough, h_hough + degreeBins * rBins);
+  cv::Mat houghImage(rBins, degreeBins, CV_32S, h_hough);
 
-  // Open a PGM file
-  std::ofstream pgmFile("output.pgm");
-  pgmFile << "P2\n"
-          << degreeBins << " " << rBins << "\n"
-          << maxVal << "\n";
+  cv::Mat houghImage8U;
+  double minVal, maxVal;
+  cv::minMaxLoc(houghImage, &minVal, &maxVal);
+  houghImage.convertTo(houghImage8U, CV_8U, 255.0 / (maxVal - minVal), -minVal * (255.0 / (maxVal - minVal)));
 
-  // Write the Hough data
-  for (int i = 0; i < degreeBins * rBins; i++)
-  {
-    pgmFile << h_hough[i] << " ";
-    if ((i + 1) % degreeBins == 0)
-      pgmFile << "\n";
-  }
+  cv::imwrite("output.png", houghImage8U);
 
   // cleanup
   free(cpuht);
@@ -230,8 +223,8 @@ int main(int argc, char **argv)
   free(pcSin);
   cudaFree(d_in);
   cudaFree(d_hough);
-  cudaFree(d_Cos);
-  cudaFree(d_Sin);
+  /* cudaFree(d_Cos);
+  cudaFree(d_Sin); */
   cudaEventDestroy(start);
   cudaEventDestroy(stop);
 
