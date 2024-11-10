@@ -16,13 +16,15 @@
 #include <fstream>
 #include <algorithm>
 #include <opencv2/opencv.hpp>
-#include "../common/pgm.h"
+#include "../../common/pgm.h"
 
 const double degreeInc = 0.5; // use 4.0 for reinforced-lines image and 0.5 for original
 const int degreeBins = static_cast<int>(180.0 / degreeInc);
 const int rBins = 100;
 const double radInc = degreeInc * M_PI / 180.0;
 
+__constant__ double d_CosConst[degreeBins];
+__constant__ double d_SinConst[degreeBins];
 
 //*****************************************************************
 // The CPU function returns a pointer to the accummulator
@@ -89,6 +91,34 @@ __global__ void GPU_HoughTran(unsigned char *pic, int w, int h, int *acc,
 }
 
 //*****************************************************************
+// Constant memory kernel
+__global__ void GPU_HoughTranConst(unsigned char *pic, int w, int h, int *acc,
+    double rMax, double rScale)
+{
+    int gloID = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gloID >= w * h)
+        return;
+
+    int xCent = w / 2;
+    int yCent = h / 2;
+    int xCoord = gloID % w - xCent;
+    int yCoord = yCent - gloID / w;
+
+    if (pic[gloID] > 0)
+    {
+        for (int tIdx = 0; tIdx < degreeBins; tIdx++)
+        {
+            double r = xCoord * d_CosConst[tIdx] + yCoord * d_SinConst[tIdx];
+            int rIdx = (r + rMax) / rScale;
+            if (rIdx >= 0 && rIdx < rBins)
+            {
+                atomicAdd(acc + (rIdx * degreeBins + tIdx), 1);
+            }
+        }
+    }
+}
+
+//*****************************************************************
 int main(int argc, char **argv)
 {
   int i;
@@ -122,6 +152,10 @@ int main(int argc, char **argv)
   cudaMemcpy(d_Cos, pcCos, sizeof(double) * degreeBins, cudaMemcpyHostToDevice);
   cudaMemcpy(d_Sin, pcSin, sizeof(double) * degreeBins, cudaMemcpyHostToDevice);
 
+  cudaMemcpyToSymbol(d_CosConst, pcCos, sizeof(double) * degreeBins);
+  cudaMemcpyToSymbol(d_SinConst, pcSin, sizeof(double) * degreeBins);
+
+
   double rMax = sqrt(1.0 * w * w + 1.0 * h * h) / 2;
   double rScale = 2 * rMax / rBins;
 
@@ -147,20 +181,25 @@ int main(int argc, char **argv)
   cudaEventCreate(&start);
   cudaEventCreate(&stop);
 
-  // Registrar el tiempo de inicio
+  // Ejecutar kernel con memoria constante
   cudaEventRecord(start);
-
-  GPU_HoughTran<<<blockNum, 256>>>(d_in, w, h, d_hough, rMax, rScale, d_Cos, d_Sin);
-
-  // Registrar el tiempo de fin
+  GPU_HoughTranConst<<<blockNum, 256>>>(d_in, w, h, d_hough, rMax, rScale);
   cudaEventRecord(stop);
-  // Esperar a que el evento stop se complete
   cudaEventSynchronize(stop);
+  float millisecondsConst = 0;
+  cudaEventElapsedTime(&millisecondsConst, start, stop);
+  printf("Tiempo de ejecución del kernel (memoria constante): %f ms\n", millisecondsConst);
 
-  // Calcular el tiempo transcurrido
-  float milliseconds = 0;
-  cudaEventElapsedTime(&milliseconds, start, stop);
-  printf("Tiempo de ejecución del kernel: %f ms\n", milliseconds);
+  // Limpiar acumulador y ejecutar kernel con memoria global
+  cudaMemset(d_hough, 0, sizeof(int) * degreeBins * rBins);
+  cudaEventRecord(start);
+  GPU_HoughTran<<<blockNum, 256>>>(d_in, w, h, d_hough, rMax, rScale, d_Cos, d_Sin);
+  cudaEventRecord(stop);
+  cudaEventSynchronize(stop);
+  float millisecondsGlobal = 0;
+  cudaEventElapsedTime(&millisecondsGlobal, start, stop);
+  printf("Tiempo de ejecución del kernel (memoria global): %f ms\n", millisecondsGlobal);
+
 
   // get results from device
   cudaMemcpy(h_hough, d_hough, sizeof(int) * degreeBins * rBins, cudaMemcpyDeviceToHost);
