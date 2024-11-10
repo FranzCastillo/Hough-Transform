@@ -18,46 +18,51 @@
 #include <opencv2/opencv.hpp>
 #include "common/pgm.h"
 
-const int degreeInc = 2;
-const int degreeBins = 180 / degreeInc;
+const double degreeInc = 0.5; // use 4.0 for reinforced-lines image and 0.5 for original
+const int degreeBins = static_cast<int>(180.0 / degreeInc);
 const int rBins = 100;
-const float radInc = degreeInc * M_PI / 180;
+const double radInc = degreeInc * M_PI / 180.0;
 //*****************************************************************
 // The CPU function returns a pointer to the accummulator
 void CPU_HoughTran(unsigned char *pic, int w, int h, int **acc)
 {
-  float rMax = sqrt(1.0 * w * w + 1.0 * h * h) / 2;  //(w^2 + h^2)/2, radio max equivalente a centro -> esquina
-  *acc = new int[rBins * degreeBins];                // el acumulador, conteo depixeles encontrados, 90*180/degInc = 9000
-  memset(*acc, 0, sizeof(int) * rBins * degreeBins); // init en ceros
-  int xCent = w / 2;
-  int yCent = h / 2;
-  float rScale = 2 * rMax / rBins;
+    double rMax = sqrt(1.0 * w * w + 1.0 * h * h) / 2.0;
+    *acc = new int[rBins * degreeBins];
+    memset(*acc, 0, sizeof(int) * rBins * degreeBins);
+    int xCent = w / 2;
+    int yCent = h / 2;
+    double rScale = 2.0 * rMax / rBins;
 
-  for (int i = 0; i < w; i++)   // por cada pixel
-    for (int j = 0; j < h; j++) //...
+    for (int i = 0; i < w; i++)
     {
-      int idx = j * w + i;
-      if (pic[idx] > 0) // si pasa thresh, entonces lo marca
-      {
-        int xCoord = i - xCent;
-        int yCoord = yCent - j;                       // y-coord has to be reversed
-        float theta = 0;                              // actual angle
-        for (int tIdx = 0; tIdx < degreeBins; tIdx++) // add 1 to all lines in that pixel
+        for (int j = 0; j < h; j++)
         {
-          float r = xCoord * cos(theta) + yCoord * sin(theta);
-          int rIdx = (r + rMax) / rScale;
-          (*acc)[rIdx * degreeBins + tIdx]++; //+1 para este radio r y este theta
-          theta += radInc;
+            int idx = j * w + i;
+            if (pic[idx] > 0)
+            {
+                int xCoord = i - xCent;
+                int yCoord = yCent - j;
+                double theta = 0.0;
+                for (int tIdx = 0; tIdx < degreeBins; tIdx++)
+                {
+                    double r = xCoord * cos(theta) + yCoord * sin(theta);
+                    int rIdx = (r + rMax) / rScale;
+                    if (rIdx >= 0 && rIdx < rBins)
+                    {
+                        (*acc)[rIdx * degreeBins + tIdx]++;
+                    }
+                    theta += radInc;
+                }
+            }
         }
-      }
     }
 }
 
 //*****************************************************************
 // TODO usar memoria constante para la tabla de senos y cosenos
 // inicializarlo en main y pasarlo al device
-__constant__ float d_Cos[degreeBins];
-__constant__ float d_Sin[degreeBins];
+__constant__ double d_Cos[degreeBins];
+__constant__ double d_Sin[degreeBins];
 
 //*****************************************************************
 // TODO Kernel memoria compartida
@@ -73,36 +78,32 @@ __constant__ float d_Sin[degreeBins];
 
 // GPU kernel. One thread per image pixel is spawned.
 // The accummulator memory needs to be allocated by the host in global memory
-__global__ void GPU_HoughTran(unsigned char *pic, int w, int h, int *acc, float rMax, float rScale)
+__global__ void GPU_HoughTran(unsigned char *pic, int w, int h, int *acc,
+    double rMax, double rScale)
 {
   int gloID = blockIdx.x * blockDim.x + threadIdx.x;
+  if(gloID==0)
+    printf("size: %i, %i \n", w, h);
   if (gloID >= w * h)
-    return; // in case of extra threads in block
+    return;
 
   int xCent = w / 2;
   int yCent = h / 2;
-
-  // TODO explicar bien bien esta parte. Dibujar un rectangulo a modo de imagen sirve para visualizarlo mejor
   int xCoord = gloID % w - xCent;
   int yCoord = yCent - gloID / w;
-
-  // TODO eventualmente usar memoria compartida para el acumulador
 
   if (pic[gloID] > 0)
   {
     for (int tIdx = 0; tIdx < degreeBins; tIdx++)
     {
-      // TODO utilizar memoria constante para senos y cosenos
-      float r = xCoord * d_Cos[tIdx] + yCoord * d_Sin[tIdx];
-      int rIdx = (r + rMax) / rScale;
-      // debemos usar atomic, pero que race condition hay si somos un thread por pixel? explique
-      atomicAdd(acc + (rIdx * degreeBins + tIdx), 1);
+        double r = xCoord * d_Cos[tIdx] + yCoord * d_Sin[tIdx];
+        int rIdx = (r + rMax) / rScale;
+        if (rIdx >= 0 && rIdx < rBins)
+        {
+            atomicAdd(acc + (rIdx * degreeBins + tIdx), 1);
+        }
     }
   }
-
-  // TODO eventualmente cuando se tenga memoria compartida, copiar del local al global
-  // utilizar operaciones atomicas para seguridad
-  // faltara sincronizar los hilos del bloque en algunos lados
 }
 
 //*****************************************************************
@@ -116,36 +117,33 @@ int main(int argc, char **argv)
   int w = inImg.x_dim;
   int h = inImg.y_dim;
 
-  // float *d_Cos;
-  // float *d_Sin;
-
-  /* cudaMalloc((void **)&d_Cos, sizeof(float) * degreeBins);
-  cudaMalloc((void **)&d_Sin, sizeof(float) * degreeBins); */
+  /* cudaMalloc((void **)&d_Cos, sizeof(double) * degreeBins);
+  cudaMalloc((void **)&d_Sin, sizeof(double) * degreeBins); */
 
   // CPU calculation
   CPU_HoughTran(inImg.pixels, w, h, &cpuht);
 
   // pre-compute values to be stored
-  float *pcCos = (float *)malloc(sizeof(float) * degreeBins);
-  float *pcSin = (float *)malloc(sizeof(float) * degreeBins);
-  float rad = 0;
-  for (i = 0; i < degreeBins; i++)
+  double *pcCos = (double *)malloc(sizeof(double) * degreeBins);
+  double *pcSin = (double *)malloc(sizeof(double) * degreeBins);
+  double rad = 0.0;
+  for (int i = 0; i < degreeBins; i++)
   {
-    pcCos[i] = cos(rad);
-    pcSin[i] = sin(rad);
-    rad += radInc;
+      pcCos[i] = cos(rad);
+      pcSin[i] = sin(rad);
+      rad += radInc;
   }
 
   // Copiar valores precalculados a memoria constante
-  cudaMemcpyToSymbol(d_Cos, pcCos, sizeof(float) * degreeBins);
-  cudaMemcpyToSymbol(d_Sin, pcSin, sizeof(float) * degreeBins);
+  cudaMemcpyToSymbol(d_Cos, pcCos, sizeof(double) * degreeBins);
+  cudaMemcpyToSymbol(d_Sin, pcSin, sizeof(double) * degreeBins);
 
-  float rMax = sqrt(1.0 * w * w + 1.0 * h * h) / 2;
-  float rScale = 2 * rMax / rBins;
+  double rMax = sqrt(1.0 * w * w + 1.0 * h * h) / 2;
+  double rScale = 2 * rMax / rBins;
 
   // TODO eventualmente volver memoria global
-  /* cudaMemcpy(d_Cos, pcCos, sizeof(float) * degreeBins, cudaMemcpyHostToDevice);
-  cudaMemcpy(d_Sin, pcSin, sizeof(float) * degreeBins, cudaMemcpyHostToDevice); */
+  /* cudaMemcpy(d_Cos, pcCos, sizeof(double) * degreeBins, cudaMemcpyHostToDevice);
+  cudaMemcpy(d_Sin, pcSin, sizeof(double) * degreeBins, cudaMemcpyHostToDevice); */
 
   // setup and copy data from host to device
   unsigned char *d_in, *h_in;
@@ -195,26 +193,70 @@ int main(int argc, char **argv)
   }
   printf("Done!\n");
 
-  // Set threshold
-  const int threshold = 100;
 
-  // Apply threshold
-  for (int i = 0; i < degreeBins * rBins; i++)
+  cv::Mat originalImage = cv::imread(argv[1], cv::IMREAD_GRAYSCALE);
+  if (originalImage.empty())
   {
-    if (h_hough[i] < threshold)
-    {
-      h_hough[i] = 0;
-    }
+      std::cerr << "Error: Could not load image " << argv[1] << std::endl;
+      return -1;
   }
 
-  cv::Mat houghImage(rBins, degreeBins, CV_32S, h_hough);
+  // Convert to BGR color space to draw colored lines
+  cv::Mat colorImage;
+  cv::cvtColor(originalImage, colorImage, cv::COLOR_GRAY2BGR);
 
-  cv::Mat houghImage8U;
-  double minVal, maxVal;
-  cv::minMaxLoc(houghImage, &minVal, &maxVal);
-  houghImage.convertTo(houghImage8U, CV_8U, 255.0 / (maxVal - minVal), -minVal * (255.0 / (maxVal - minVal)));
+  // Set threshold for significant lines
 
-  cv::imwrite("output.png", houghImage8U);
+  const int threshold = 4200; //Use 2500 for reinforced-lines image an 4200 for original lines
+
+  // Apply threshold
+  for (int rIdx = 0; rIdx < rBins; rIdx++)
+    {
+        for (int tIdx = 0; tIdx < degreeBins; tIdx++)
+        {
+            int idx = rIdx * degreeBins + tIdx;
+            if (h_hough[idx] >= threshold)
+            {
+                float theta = tIdx * radInc;
+                float r = rIdx * rScale - rMax;
+
+                double cosTheta = cos(theta);
+                double sinTheta = sin(theta);
+
+                // Points where the line crosses the borders of the image
+                cv::Point pt1, pt2;
+
+                // Since sinTheta and cosTheta can be zero, we need to handle those cases
+                if (fabs(sinTheta) > 1e-6)
+                {
+                    // Compute the intersection with the left and right borders
+                    pt1.x = 0;
+                    pt1.y = (r - (pt1.x - w / 2) * cosTheta) / sinTheta + h / 2;
+
+                    pt2.x = w;
+                    pt2.y = (r - (pt2.x - w / 2) * cosTheta) / sinTheta + h / 2;
+                }
+                else
+                {
+                    // sinTheta is zero, line is horizontal
+                    pt1.y = 0;
+                    pt1.x = (r - (pt1.y - h / 2) * sinTheta) / cosTheta + w / 2;
+
+                    pt2.y = h;
+                    pt2.x = (r - (pt2.y - h / 2) * sinTheta) / cosTheta + w / 2;
+                }
+
+                // Adjust y-coordinates to account for the inverted y-axis
+                pt1.y = h - pt1.y;
+                pt2.y = h - pt2.y;
+
+                // Draw the line on the image
+                cv::line(colorImage, pt1, pt2, cv::Scalar(0, 255, 0), 1);
+            }
+        }
+    }
+
+  cv::imwrite("output.png", colorImage);
 
   // cleanup
   free(cpuht);
@@ -223,8 +265,8 @@ int main(int argc, char **argv)
   free(pcSin);
   cudaFree(d_in);
   cudaFree(d_hough);
-  /* cudaFree(d_Cos);
-  cudaFree(d_Sin); */
+  cudaFree(d_Cos);
+  cudaFree(d_Sin);
   cudaEventDestroy(start);
   cudaEventDestroy(stop);
 
