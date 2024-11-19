@@ -1,8 +1,9 @@
 /*
  ============================================================================
  Author        : G. Barlas
- Version       : 1.0
- Last modified : December 2014
+ Version       : 2.0
+ Last modified : November 2024
+ Modified by   : A. Montoya, F. Esquivel, F. Castillo
  License       : Released under the GNU GPL 3.0
  Description   :
  To build use  : make
@@ -119,6 +120,51 @@ __global__ void GPU_HoughTranConst(unsigned char *pic, int w, int h, int *acc,
 }
 
 //*****************************************************************
+//Shared Memory Kernel
+__global__ void GPU_HoughTranShared(unsigned char *pic, int w, int h, int *acc,
+                                    double rMax, double rScale) {
+    //Obtener IDs de hilos y bloques
+    int gloID = blockIdx.x * blockDim.x + threadIdx.x;
+    int locID = threadIdx.x; //ID local dentro del bloque
+
+    //Verificar límites
+    if (gloID >= w * h) return;
+
+    //Dimensiones para memoria compartida
+    __shared__ int localAcc[degreeBins * rBins];
+
+    //Inicializar acumulador local a 0
+    if (locID < degreeBins * rBins) {
+        localAcc[locID] = 0;
+    }
+    __syncthreads(); //Asegurar inicialización completa
+
+    int xCent = w / 2;
+    int yCent = h / 2;
+    int xCoord = gloID % w - xCent;
+    int yCoord = yCent - gloID / w;
+
+    //Si el píxel es blanco
+    if (pic[gloID] > 0) {
+        for (int tIdx = 0; tIdx < degreeBins; tIdx++) {
+            double r = xCoord * d_CosConst[tIdx] + yCoord * d_SinConst[tIdx];
+            int rIdx = (r + rMax) / rScale;
+            if (rIdx >= 0 && rIdx < rBins) {
+                // Incrementar acumulador local
+                atomicAdd(&localAcc[rIdx * degreeBins + tIdx], 1);
+            }
+        }
+    }
+    __syncthreads(); //Esperar a que todos los hilos actualicen localAcc
+
+    //Sumar valores del acumulador local al acumulador global
+    for (int i = locID; i < degreeBins * rBins; i += blockDim.x) {
+        atomicAdd(&acc[i], localAcc[i]);
+    }
+}
+
+
+//*****************************************************************
 int main(int argc, char **argv)
 {
   int i;
@@ -200,6 +246,16 @@ int main(int argc, char **argv)
   cudaEventElapsedTime(&millisecondsGlobal, start, stop);
   printf("Tiempo de ejecución del kernel (memoria global): %f ms\n", millisecondsGlobal);
 
+  //Limpiar acumulador global
+  cudaMemset(d_hough, 0, sizeof(int) * degreeBins * rBins);
+  //Ejecutar kernel con memoria compartida
+  cudaEventRecord(start);
+  GPU_HoughTranShared<<<blockNum, 256>>>(d_in, w, h, d_hough, rMax, rScale);
+  cudaEventRecord(stop);
+  cudaEventSynchronize(stop);
+  float millisecondsShared = 0;
+  cudaEventElapsedTime(&millisecondsShared, start, stop);
+  printf("Tiempo de ejecución del kernel (memoria compartida): %f ms\n", millisecondsShared);
 
   // get results from device
   cudaMemcpy(h_hough, d_hough, sizeof(int) * degreeBins * rBins, cudaMemcpyDeviceToHost);
