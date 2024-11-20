@@ -22,3 +22,5 @@ make
 
 ./hough.o data/runway.pgm
 ```
+
+sed -i 's/\r//g' run.sh
