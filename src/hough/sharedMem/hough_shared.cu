@@ -255,7 +255,7 @@ int main(int argc, char **argv)
   printf("Tiempo de ejecución del kernel (memoria global): %f ms\n", millisecondsGlobal);
 
   //Calculate the required shared memory size
-  int sharedMemorySize = degreeBins * rBins * sizeof(int);
+  int sharedMemorySize = degreeBins * sizeof(int);
   //Execute kernel with shared memory
   cudaEventRecord(start);
   GPU_HoughTranSharedFixed<<<blockNum, 256, sharedMemorySize>>>(d_in, w, h, d_hough, rMax, rScale);
@@ -268,15 +268,8 @@ int main(int argc, char **argv)
 
   // get results from device
   cudaMemcpy(h_hough, d_hough, sizeof(int) * degreeBins * rBins, cudaMemcpyDeviceToHost);
-
-  // compare CPU and GPU results
-  for (i = 0; i < degreeBins * rBins; i++)
-  {
-    if (cpuht[i] != h_hough[i])
-      printf("Calculation mismatch at : %i %i %i\n", i, cpuht[i], h_hough[i]);
-  }
+  
   printf("Done!\n");
-
 
   cv::Mat originalImage = cv::imread(argv[1], cv::IMREAD_GRAYSCALE);
   if (originalImage.empty())
