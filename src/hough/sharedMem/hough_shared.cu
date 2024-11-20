@@ -121,48 +121,43 @@ __global__ void GPU_HoughTranConst(unsigned char *pic, int w, int h, int *acc,
 
 //*****************************************************************
 //Shared Memory Kernel
-__global__ void GPU_HoughTranSharedOptimized(unsigned char *pic, int w, int h, int *acc,
-                                             double rMax, double rScale) {
-    // Obtener IDs de hilos y bloques
-    int gloID = blockIdx.x * blockDim.x + threadIdx.x;
-    int locID = threadIdx.x; // ID local dentro del bloque
+__global__ void GPU_HoughTranSharedFix(unsigned char *pic, int w, int h, int *acc,
+                                       double rMax, double rScale) {
+    int gloID = blockIdx.x * blockDim.x + threadIdx.x; // ID global del hilo
+    int locID = threadIdx.x;                          // ID local dentro del bloque
 
-    // Fragmentar el acumulador local para reducir el uso de memoria compartida
-    const int sharedFragmentSize = 256; // Ajustar según el límite de memoria compartida
-    __shared__ int localAcc[sharedFragmentSize];
+    if (gloID >= w * h) return;
+
+    __shared__ int localAcc[degreeBins * rBins]; // Memoria compartida local
 
     // Inicializar acumulador local
-    for (int i = locID; i < sharedFragmentSize; i += blockDim.x) {
+    for (int i = locID; i < degreeBins * rBins; i += blockDim.x) {
         localAcc[i] = 0;
     }
-    __syncthreads(); // Asegurar inicialización completa
+    __syncthreads();
 
     int xCent = w / 2;
     int yCent = h / 2;
     int xCoord = gloID % w - xCent;
     int yCoord = yCent - gloID / w;
 
-    // Si el píxel es blanco
     if (pic[gloID] > 0) {
         for (int tIdx = 0; tIdx < degreeBins; tIdx++) {
             double r = xCoord * d_CosConst[tIdx] + yCoord * d_SinConst[tIdx];
             int rIdx = (r + rMax) / rScale;
-            int localIdx = (rIdx * degreeBins + tIdx) % sharedFragmentSize;
-
             if (rIdx >= 0 && rIdx < rBins) {
-                // Incrementar acumulador local
+                int localIdx = rIdx * degreeBins + tIdx; // Índice en memoria compartida
                 atomicAdd(&localAcc[localIdx], 1);
             }
         }
     }
-    __syncthreads(); // Esperar a que todos los hilos actualicen localAcc
+    __syncthreads();
 
-    // Sumar valores del acumulador local al acumulador global
-    for (int i = locID; i < sharedFragmentSize; i += blockDim.x) {
-        atomicAdd(&acc[(blockIdx.x * sharedFragmentSize) + i], localAcc[i]);
+    // Transferir acumulador local al acumulador global
+    for (int i = locID; i < degreeBins * rBins; i += blockDim.x) {
+        atomicAdd(&acc[i], localAcc[i]);
     }
 }
-
 
 //*****************************************************************
 int main(int argc, char **argv)
@@ -246,20 +241,18 @@ int main(int argc, char **argv)
   cudaEventElapsedTime(&millisecondsGlobal, start, stop);
   printf("Tiempo de ejecución del kernel (memoria global): %f ms\n", millisecondsGlobal);
 
- const int sharedFragmentSize = 256; // Fragmento en memoria compartida
-
- // Limpiar acumulador global
- cudaMemset(d_hough, 0, sizeof(int) * degreeBins * rBins);
-
- // Ejecutar kernel optimizado
- cudaEventRecord(start);
- GPU_HoughTranSharedOptimized<<<blockNum, 256>>>(d_in, w, h, d_hough, rMax, rScale);
- cudaEventRecord(stop);
- cudaEventSynchronize(stop);
- float millisecondsShared = 0;
- cudaEventElapsedTime(&millisecondsShared, start, stop);
- printf("Tiempo de ejecución del kernel (memoria compartida optimizada): %f ms\n", millisecondsShared);
-
+  // Configuración del kernel
+  int blockNum = ceil(w * h / 256);
+  // Limpiar acumulador global
+  cudaMemset(d_hough, 0, sizeof(int) * degreeBins * rBins);
+  // Ejecutar kernel optimizado
+  cudaEventRecord(start);
+  GPU_HoughTranSharedFix<<<blockNum, 256>>>(d_in, w, h, d_hough, rMax, rScale);
+  cudaEventRecord(stop);
+  cudaEventSynchronize(stop);
+  float millisecondsShared = 0;
+  cudaEventElapsedTime(&millisecondsShared, start, stop);
+  printf("Tiempo de ejecución del kernel (memoria compartida optimizada): %f ms\n", millisecondsShared);
 
   // get results from device
   cudaMemcpy(h_hough, d_hough, sizeof(int) * degreeBins * rBins, cudaMemcpyDeviceToHost);
